@@ -1,5 +1,12 @@
 // @vitest-environment jsdom
 
+import type { BbDesktopCloseWindowRequestHandler } from "@bb/desktop-contract";
+import {
+  AppCommandProvider,
+  useAppCommandRunner,
+} from "@/components/commands/AppCommandProvider";
+import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
+import { pluginWorkspaceAtom } from "@/components/plugin/plugin-workspace-state";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { createStore, Provider } from "jotai";
 import { splitLayoutAtom, maximizedPaneIdAtom } from "@/lib/split-layout/atoms";
@@ -143,6 +150,7 @@ function renderWithQueryClient(ui: ReactNode) {
 
 afterEach(() => {
   cleanup();
+  delete window.bbDesktop;
   window.localStorage.removeItem("bb.plugins.workspace.tabs");
   resetPluginSlotStoreForTest();
   vi.restoreAllMocks();
@@ -757,6 +765,109 @@ describe("PluginDetail official catalog lifecycle", () => {
       screen.queryByRole("menuitem", { name: "Copy marketplace link" }),
     ).toBeNull();
   });
+});
+
+describe("plugin workspace close commands", () => {
+  it.each(["desktop", "command"] as const)(
+    "closes tabs before allowing window close through %s",
+    async (source) => {
+      const handlers = new Set<BbDesktopCloseWindowRequestHandler>();
+      window.bbDesktop = {
+        ...createBbDesktopApi({
+          platform: "macos",
+          version: "0.0.0-test",
+          lastCheckedAt: null,
+          latestVersion: null,
+          pendingVersion: null,
+          updateAvailable: false,
+          updateDownloaded: false,
+        }),
+        onCloseWindowRequest(handler) {
+          handlers.add(handler);
+          return () => handlers.delete(handler);
+        },
+      };
+      const store = createStore();
+      store.set(pluginWorkspaceAtom, {
+        tabs: ["github", "automations"],
+        activePluginId: "automations",
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url === "/api/v1/plugins")
+            return Response.json({
+              enabled: true,
+              plugins: [
+                makeInstalledPlugin({ id: "github", name: "GitHub" }),
+                makeInstalledPlugin({ id: "automations", name: "Automations" }),
+              ],
+            });
+          if (url.startsWith("/api/v1/plugin-catalog/search"))
+            return Response.json({ results: [], collections: [] });
+          return Response.json({ error: "not found" }, { status: 404 });
+        }),
+      );
+      let handled = false;
+      function CloseCommand() {
+        const { dispatch } = useAppCommandRunner();
+        return (
+          <button
+            onClick={() => {
+              handled = dispatch("panel.close", document.body);
+            }}
+          >
+            Request close
+          </button>
+        );
+      }
+      const { wrapper } = createQueryClientTestHarness();
+      const view = render(
+        <Provider store={store}>
+          <MemoryRouter initialEntries={["/plugins/automations"]}>
+            <AppCommandProvider>
+              <RoutedPluginsView />
+              <CloseCommand />
+            </AppCommandProvider>
+          </MemoryRouter>
+        </Provider>,
+        { wrapper },
+      );
+      await screen.findByRole("heading", { name: "Automations", level: 1 });
+      function requestClose() {
+        handled = false;
+        act(() => {
+          if (source === "desktop") {
+            for (const handler of handlers) handled = handler() || handled;
+          } else {
+            fireEvent.click(
+              screen.getByRole("button", { name: "Request close" }),
+            );
+          }
+        });
+        return handled;
+      }
+      expect(requestClose()).toBe(true);
+      expect(store.get(pluginWorkspaceAtom)).toEqual({
+        tabs: ["github"],
+        activePluginId: "github",
+      });
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/plugins/github",
+      );
+      await screen.findByRole("heading", { name: "GitHub", level: 1 });
+      expect(requestClose()).toBe(true);
+      expect(store.get(pluginWorkspaceAtom)).toEqual({
+        tabs: [],
+        activePluginId: null,
+      });
+      expect(screen.getByTestId("location").textContent).toBe("/plugins");
+      expect(requestClose()).toBe(false);
+      view.unmount();
+      expect(handlers.size).toBe(0);
+    },
+  );
 });
 
 describe("BB Official plugin detail routing", () => {

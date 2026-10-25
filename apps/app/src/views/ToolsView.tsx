@@ -1,3 +1,5 @@
+import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
+import { getBbDesktopInfo } from "@/lib/bb-desktop";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { useAtom } from "jotai";
 import { PluginSettingsPage } from "@/components/plugin/PluginSettings";
@@ -537,6 +539,17 @@ export function PluginsView({ detailKey }: { detailKey?: string } = {}) {
     },
     [activePluginId, closePanel, openIds, selectPlugin, setWorkspace],
   );
+  const handleCloseWindowRequest = useCallback(() => {
+    if (!isPanelOpen || activePluginId === null) return false;
+    closeTab(activePluginId);
+    return true;
+  }, [activePluginId, closeTab, isPanelOpen]);
+  useAppCommandHandler("panel.close", handleCloseWindowRequest);
+  useEffect(() => {
+    const desktopInfo = getBbDesktopInfo();
+    return desktopInfo?.onCloseWindowRequest?.(handleCloseWindowRequest);
+  }, [handleCloseWindowRequest]);
+
   const reorderTab = useCallback<SecondaryPanelTabReorderHandler>(
     ({ activeTabId, overTabId }) => {
       const tabs = [...openIds];
