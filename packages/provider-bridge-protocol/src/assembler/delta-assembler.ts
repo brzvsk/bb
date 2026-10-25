@@ -560,6 +560,7 @@ export function createDeltaAssembler(
         taskStatus: shape.taskStatus,
         skipTranscript: shape.skipTranscript,
         foreground: shape.foreground ?? false,
+        ...(shape.model === undefined ? {} : { model: shape.model }),
         ...(shape.workflowName === undefined
           ? {}
           : { workflowName: shape.workflowName }),

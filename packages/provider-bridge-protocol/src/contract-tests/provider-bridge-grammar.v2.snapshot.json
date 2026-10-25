@@ -196,6 +196,7 @@
       "taskStatus": "required",
       "skipTranscript": "required",
       "foreground": "optional",
+      "model": "optional",
       "workflowName": "optional",
       "workflow": "optional",
       "usage": "optional",

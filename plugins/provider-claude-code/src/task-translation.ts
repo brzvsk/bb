@@ -31,6 +31,7 @@ interface ClaudeTrackedTask {
   toolUseId: string | undefined;
   taskType: string;
   generation: number;
+  model: string | undefined;
   workflowName: string | undefined;
   description: string;
   taskStatus: BackgroundTaskStatus;
@@ -51,6 +52,7 @@ export type ClaudeTaskMap = Map<string, ClaudeTrackedTask>;
 interface TranslateClaudeTaskMessageArgs {
   event: unknown;
   tasks: ClaudeTaskMap;
+  childModelsByToolUseId: ReadonlyMap<string, string>;
   turnStartSuppressed: boolean;
   hasForwardedToolUse: (toolUseId: string) => boolean;
 }
@@ -200,6 +202,7 @@ function buildClaudeTaskShape(
     taskStatus: task.taskStatus,
     skipTranscript: task.skipTranscript,
     foreground: task.foreground,
+    ...(task.model !== undefined ? { model: task.model } : {}),
     ...(task.workflowName !== undefined
       ? { workflowName: task.workflowName }
       : {}),
@@ -298,12 +301,17 @@ export function translateClaudeTaskMessage(
       return [];
     }
     const foreground = message.is_backgrounded === false;
+    const model =
+      message.tool_use_id !== undefined && isBackgroundAgentTaskType(taskType)
+        ? args.childModelsByToolUseId.get(message.tool_use_id)
+        : undefined;
     const task: ClaudeTrackedTask = {
       taskId: message.task_id,
       providerItemKey: buildClaudeTaskItemKey(message.task_id, generation),
       toolUseId: message.tool_use_id,
       taskType,
       generation,
+      model,
       workflowName: message.workflow_name,
       description: message.description,
       taskStatus: "running",
@@ -355,8 +363,7 @@ export function translateClaudeTaskMessage(
     if (patch.error !== undefined) {
       task.error = patch.error;
     }
-    const movedToBackground =
-      patch.is_backgrounded === true && task.foreground;
+    const movedToBackground = patch.is_backgrounded === true && task.foreground;
     if (movedToBackground) {
       task.foreground = false;
     }
@@ -394,6 +401,34 @@ export function translateClaudeTaskMessage(
   }
 
   return null;
+}
+
+export function applyClaudeTaskChildModel(args: {
+  tasks: ClaudeTaskMap;
+  childModelsByToolUseId: Map<string, string>;
+  toolUseId: string;
+  model: string;
+}): ThreadDelta[] {
+  const previous = args.childModelsByToolUseId.get(args.toolUseId);
+  if (previous === args.model) {
+    return [];
+  }
+  args.childModelsByToolUseId.set(args.toolUseId, args.model);
+  const deltas: ThreadDelta[] = [];
+  for (const task of args.tasks.values()) {
+    if (
+      task.toolUseId !== args.toolUseId ||
+      !isBackgroundAgentTaskType(task.taskType) ||
+      task.model === args.model
+    ) {
+      continue;
+    }
+    task.model = args.model;
+    if (task.materialized && !task.terminal) {
+      deltas.push(buildClaudeTaskProgressDelta(task, true));
+    }
+  }
+  return deltas;
 }
 
 export function buildInterruptedClaudeTaskDeltas(args: {

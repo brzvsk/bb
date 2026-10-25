@@ -6,6 +6,8 @@ import {
   normalizeProviderCommandOutput,
   textBlockSchema,
   toNonNegativeNumber,
+  toOptionalRecord,
+  toOptionalString,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -60,6 +62,8 @@ interface ClaudeCommandExecutionOutputArgs {
   toolUseResult: ClaudeToolUseResult | null;
 }
 
+export const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
+
 const CLAUDE_EMPTY_BASH_OUTPUT_PLACEHOLDERS = [
   "(Bash completed with no output)",
 ] as const;
@@ -102,6 +106,18 @@ export function extractAssistantText(
   }
   const joined = chunks.join("\n").trim();
   return joined.length > 0 ? joined : undefined;
+}
+
+export function extractClaudeAssistantModel(
+  message: ClaudeAssistantMessage,
+): string | null {
+  const model = toOptionalString(
+    toOptionalRecord(message.message)?.model,
+  )?.trim();
+  if (!model || model === CLAUDE_SYNTHETIC_MODEL) {
+    return null;
+  }
+  return model;
 }
 
 export function extractToolUses(

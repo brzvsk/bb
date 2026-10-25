@@ -122,6 +122,7 @@ function agentTaskItem(args: {
   description?: string;
   parentToolCallId?: string;
   foreground?: boolean;
+  model?: string;
 }): ThreadEventBackgroundTaskItem {
   return {
     type: "backgroundTask",
@@ -133,6 +134,7 @@ function agentTaskItem(args: {
     taskStatus: args.taskStatus,
     skipTranscript: false,
     foreground: args.foreground ?? false,
+    ...(args.model ? { model: args.model } : {}),
     ...(args.parentToolCallId
       ? { parentToolCallId: args.parentToolCallId }
       : {}),
@@ -173,6 +175,22 @@ function agentTaskStarted(
       threadId: "thread-1",
       providerThreadId: "provider-1",
       scope: turnScope("turn-1"),
+      item,
+    },
+    seq,
+  );
+}
+
+function agentTaskProgress(
+  item: ThreadEventBackgroundTaskItem,
+  seq: number,
+): ThreadEventWithMeta {
+  return withMeta(
+    {
+      type: "item/backgroundTask/progress",
+      threadId: "thread-1",
+      providerThreadId: "provider-1",
+      scope: threadScope(),
       item,
     },
     seq,
@@ -758,10 +776,9 @@ describe("background task timeline projection", () => {
       },
       2,
     );
-    const whileForeground = buildTimeline(
-      [turnStarted("turn-1", 1), started],
-      { includeNestedRows: false },
-    );
+    const whileForeground = buildTimeline([turnStarted("turn-1", 1), started], {
+      includeNestedRows: false,
+    });
     expect(whileForeground.activeBackgroundCommands).toEqual([]);
 
     const afterBackgrounding = buildTimeline(
@@ -841,6 +858,113 @@ describe("background task timeline projection", () => {
         taskType: "local_agent",
       },
     ]);
+  });
+
+  it("projects the background agent's observed child model without an Agent model argument", () => {
+    const timeline = buildTimeline(
+      [
+        turnStarted("turn-1", 1),
+        withMeta(
+          {
+            type: "item/started",
+            threadId: "thread-1",
+            providerThreadId: "provider-1",
+            scope: turnScope("turn-1"),
+            item: {
+              type: "toolCall",
+              id: "toolu-root-agent",
+              tool: "Agent",
+              arguments: {
+                description: "Inspect the mobile banner",
+                prompt: "Inspect the mobile banner",
+                subagent_type: "general-purpose",
+              },
+              status: "pending",
+            },
+          },
+          2,
+        ),
+        agentTaskStarted(
+          agentTaskItem({
+            status: "pending",
+            taskStatus: "running",
+            description: "Inspect the mobile banner",
+            parentToolCallId: "toolu-root-agent",
+            model: "claude-opus-5",
+          }),
+          3,
+        ),
+      ],
+      { includeNestedRows: false },
+    );
+
+    expect(timeline.activeBackgroundCommands).toMatchObject([
+      {
+        description: "Inspect the mobile banner",
+        model: "claude-opus-5",
+        taskType: "local_agent",
+      },
+    ]);
+  });
+
+  it("keeps the observed child model when later progress omits it", () => {
+    const timeline = buildTimeline(
+      [
+        turnStarted("turn-1", 1),
+        agentTaskStarted(
+          agentTaskItem({
+            status: "pending",
+            taskStatus: "running",
+            model: "claude-opus-5",
+          }),
+          2,
+        ),
+        agentTaskProgress(
+          agentTaskItem({
+            status: "pending",
+            taskStatus: "running",
+          }),
+          3,
+        ),
+      ],
+      { includeNestedRows: false },
+    );
+
+    expect(timeline.activeBackgroundCommands).toMatchObject([
+      { model: "claude-opus-5", taskType: "local_agent" },
+    ]);
+  });
+
+  it("keeps the observed child model on the completed agent row", () => {
+    const timeline = buildTimeline([
+      turnStarted("turn-1", 1),
+      agentTaskStarted(
+        agentTaskItem({
+          status: "pending",
+          taskStatus: "running",
+          model: "claude-opus-5",
+        }),
+        2,
+      ),
+      agentTaskCompleted(
+        agentTaskItem({
+          status: "completed",
+          taskStatus: "completed",
+        }),
+        3,
+      ),
+    ]);
+
+    expect(
+      findWorkflowRows(timeline.rows).find(
+        (row) => row.itemId === "task:agent-1",
+      ),
+    ).toMatchObject({
+      model: "claude-opus-5",
+      status: "completed",
+      taskType: "local_agent",
+    });
+    expect(timeline.activeBackgroundCommands).toHaveLength(0);
   });
 
   it("carries the model into a restarted agent generation without a parent call", () => {

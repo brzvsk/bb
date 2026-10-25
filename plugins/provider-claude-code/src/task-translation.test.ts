@@ -1282,6 +1282,160 @@ describe("claude-code background task translation", () => {
     );
   });
 
+  it("keeps concurrent child-agent models on their own tasks", () => {
+    const harness = createClaudeDeltaHarness();
+    const context = { threadId: "bb-thread-1" };
+    const childMessage = (
+      parentToolUseId: string,
+      model: string | undefined,
+      text: string,
+    ) => ({
+      jsonrpc: "2.0",
+      method: "sdk/message",
+      params: {
+        threadId: "bb-thread-1",
+        message: {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            ...(model === undefined ? {} : { model }),
+            content: [{ type: "text", text }],
+          },
+          parent_tool_use_id: parentToolUseId,
+          session_id: "sess-1",
+        },
+      },
+    });
+    const taskStarted = (
+      taskId: string,
+      toolUseId: string,
+      description: string,
+    ) => ({
+      type: "system",
+      subtype: "task_started",
+      task_id: taskId,
+      tool_use_id: toolUseId,
+      description,
+      task_type: "local_agent",
+      is_backgrounded: true,
+      session_id: "sess-1",
+    });
+
+    harness.translate(
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "claude-fable-5",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_child_a",
+              name: "Agent",
+              input: {
+                description: "First child",
+                prompt: "First child",
+                subagent_type: "Explore",
+                run_in_background: true,
+              },
+            },
+            {
+              type: "tool_use",
+              id: "toolu_child_b",
+              name: "Agent",
+              input: {
+                description: "Second child",
+                prompt: "Second child",
+                subagent_type: "Explore",
+                run_in_background: true,
+              },
+            },
+          ],
+        },
+        session_id: "sess-1",
+      },
+      context,
+    );
+
+    harness.translate(
+      taskStarted("task-child-a", "toolu_child_a", "First child"),
+      context,
+    );
+    harness.translate(
+      childMessage("toolu_child_a", "claude-opus-5", "A"),
+      context,
+    );
+    harness.translate(
+      childMessage("toolu_child_b", "claude-sonnet-5", "B"),
+      context,
+    );
+    const secondStarted = harness.translate(
+      taskStarted("task-child-b", "toolu_child_b", "Second child"),
+      context,
+    );
+    expect(
+      backgroundTaskItem(collectTaskEvents(secondStarted)[0]!),
+    ).toMatchObject({ model: "claude-sonnet-5" });
+
+    harness.translate(
+      childMessage("toolu_child_a", "<synthetic>", "A"),
+      context,
+    );
+    harness.translate(childMessage("toolu_child_a", undefined, "A"), context);
+
+    const completedA = harness.translate(
+      {
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-child-a",
+        tool_use_id: "toolu_child_a",
+        status: "completed",
+        output_file: "/tmp/tasks/task-child-a.output",
+        summary: "First child completed",
+        session_id: "sess-1",
+      },
+      context,
+    );
+    const completedB = harness.translate(
+      {
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-child-b",
+        tool_use_id: "toolu_child_b",
+        status: "completed",
+        output_file: "/tmp/tasks/task-child-b.output",
+        summary: "Second child completed",
+        session_id: "sess-1",
+      },
+      context,
+    );
+
+    expect(backgroundTaskItem(collectTaskEvents(completedA)[0]!)).toMatchObject(
+      {
+        model: "claude-opus-5",
+      },
+    );
+    expect(backgroundTaskItem(collectTaskEvents(completedB)[0]!)).toMatchObject(
+      {
+        model: "claude-sonnet-5",
+      },
+    );
+    const models = [...completedA, ...completedB, ...secondStarted].flatMap(
+      (event) => {
+        const item =
+          event.type === "item/started" ||
+          event.type === "item/backgroundTask/progress" ||
+          event.type === "item/backgroundTask/completed"
+            ? event.item
+            : undefined;
+        return item?.type === "backgroundTask" && item.model !== undefined
+          ? [item.model]
+          : [];
+      },
+    );
+    expect(models).not.toContain("claude-fable-5");
+  });
+
   it("closes a failed result even while a background agent is open", () => {
     const harness = createClaudeDeltaHarness();
     const context = { threadId: "bb-thread-1" };

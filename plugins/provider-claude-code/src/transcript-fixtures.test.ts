@@ -269,6 +269,26 @@ describe("claude transcript fixtures", () => {
     });
   });
 
+  it("carries each sidechain agent's actual model onto its background task", () => {
+    const run = runs.get("background-agents.ndjson");
+    if (run === undefined) {
+      throw new Error("background-agents fixture missing");
+    }
+    const completedAgentTasks = run.events.flatMap((event) =>
+      event.type === "item/backgroundTask/completed" &&
+      event.item.type === "backgroundTask" &&
+      event.item.taskType === "local_agent"
+        ? [event.item]
+        : [],
+    );
+    expect(completedAgentTasks).toHaveLength(3);
+    expect(completedAgentTasks.map((item) => item.model)).toEqual([
+      "claude-opus-5",
+      "claude-opus-5",
+      "claude-opus-5",
+    ]);
+  });
+
   it("matches the pinned projection (UPDATE_TRANSCRIPT_EXPECTATIONS=1 to rewrite)", () => {
     const actual = Object.fromEntries(
       fixtureNames.map((name) => [name, projection(runs.get(name)!)]),

@@ -255,8 +255,8 @@ function enrichBackgroundAgentModels(
 
     const taskFamilyId = getBackgroundTaskFamilyId(message);
     const model =
-      getBackgroundAgentModel(message, callMessageById) ??
       message.model ??
+      getBackgroundAgentModel(message, callMessageById) ??
       modelByTaskFamilyId.get(taskFamilyId) ??
       null;
     message.model = model;

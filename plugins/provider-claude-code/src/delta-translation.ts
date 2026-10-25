@@ -58,6 +58,7 @@ import {
   type ClaudeInjectedTool,
 } from "./tool-classification.js";
 import {
+  applyClaudeTaskChildModel,
   hasCompletionBlockingClaudeTasks,
   buildInterruptedClaudeTaskDeltas,
   translateClaudeTaskMessage,
@@ -65,6 +66,7 @@ import {
 } from "./task-translation.js";
 import {
   extractAssistantText,
+  extractClaudeAssistantModel,
   extractClaudeCommandExecutionOutput,
   extractClaudeContextWindowUsage,
   extractClaudeRequestContextTokens,
@@ -74,6 +76,7 @@ import {
   extractThinkingBlocks,
   extractToolResults,
   extractToolUses,
+  CLAUDE_SYNTHETIC_MODEL,
   getNestedParentToolUseId,
   resolveClaudeModelContextWindowHint,
 } from "./sdk-extraction.js";
@@ -144,7 +147,6 @@ const claudeResultFallbackErrorDetails: Record<string, string> = {
   error_max_turns: "Claude Code reached the maximum number of turns.",
 };
 
-const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
 const CLAUDE_NO_RESPONSE_REQUESTED_TEXT = "No response requested.";
 const CLAUDE_SYNTHETIC_ZERO_USAGE_KEYS = [
   "input_tokens",
@@ -401,6 +403,7 @@ interface ClaudeThreadDialectState {
   startedTools: Map<string, ClaudeClassifiedTool>;
   heldSkillOpen: HeldSkillOpen | undefined;
   tasksById: ClaudeTaskMap;
+  childModelsByToolUseId: Map<string, string>;
   taskPlan: ClaudeTaskPlanState;
 }
 
@@ -420,6 +423,7 @@ function createThreadState(): ClaudeThreadDialectState {
     startedTools: new Map(),
     heldSkillOpen: undefined,
     tasksById: new Map(),
+    childModelsByToolUseId: new Map(),
     taskPlan: new Map(),
   };
 }
@@ -776,6 +780,7 @@ export function createClaudeDeltaTranslator(
     const taskDeltas = translateClaudeTaskMessage({
       event,
       tasks: state.tasksById,
+      childModelsByToolUseId: state.childModelsByToolUseId,
       turnStartSuppressed: isTurnStartSuppressed(state),
       hasForwardedToolUse: (toolUseId) => state.startedTools.has(toolUseId),
     });
@@ -876,6 +881,19 @@ export function createClaudeDeltaTranslator(
     const deltas = withMirror(state, [{ kind: "turn.open" }]);
     if (providerCheckpointId !== undefined) {
       state.latestProviderCheckpointId = providerCheckpointId;
+    }
+    if (parentToolCallId !== undefined) {
+      const assistantModel = extractClaudeAssistantModel(message);
+      if (assistantModel !== null) {
+        deltas.push(
+          ...applyClaudeTaskChildModel({
+            tasks: state.tasksById,
+            childModelsByToolUseId: state.childModelsByToolUseId,
+            toolUseId: parentToolCallId,
+            model: assistantModel,
+          }),
+        );
+      }
     }
     if (parentToolCallId === undefined) {
       const requestContextTokens = extractClaudeRequestContextTokens(message);
